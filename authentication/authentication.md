@@ -8,7 +8,7 @@ This document provides a comprehensive overview of API authentication, focusing 
 
 -----
 
-## 1\. 🔑 Core Authentication Concepts
+## 1. 🔑 Core Authentication Concepts
 
 **Authentication** is the process of verifying the identity of a client (a user or another server) that is trying to access your API.
 
@@ -22,11 +22,11 @@ This document provides a comprehensive overview of API authentication, focusing 
 ### Stateful vs. Stateless Patterns
 
   * **Stateful:** The server **maintains the state** or data of a user's session (e.g., in a database or cache). Session-based auth is stateful.
-  * **Stateless:** The server **does not store any session state**. Each request from the client contains all the information needed to authenticate and process it. JWTs enable stateless authentication.
+  * **Stateless:** The server **does not store any session state**. Each request from the client contains all the information needed to authenticate and process it. JWTs enable stateless authentication and are ideal for distributed systems where you don't want to centralize session storage.
 
 -----
 
-## 2\. 💎 JWT (JSON Web Token) Deep Dive
+## 2. 💎 JWT (JSON Web Token) Deep Dive
 
 A JWT is a compact, URL-safe string that represents "claims" between two parties. It's the most popular way to build stateless authentication.
 
@@ -63,35 +63,63 @@ A JWT consists of three parts separated by dots (`.`):
     )
     ```
 
-> **Warning: A JWT's payload is Base64URL-encoded, *not* encrypted\!**
+> **Warning: A JWT's payload is Base64URL-encoded, *not* encrypted!**
 > Anyone can decode the payload and read its contents. The signature's only job is to **guarantee that the data hasn't been tampered with**.
->
+> 
 > **NEVER put highly sensitive data (like passwords) in a JWT payload.**
+
+### Visual: JWT Assembly & Verification (Mermaid)
+
+```mermaid
+graph LR
+  H[Header JSON] --> HB[Base64URL(Header)]
+  P[Payload JSON] --> PB[Base64URL(Payload)]
+  HB --> S[Create Signature]
+  PB --> S
+  S --> JWT[JWT = HB.PB.Signature]
+
+  subgraph Verification
+    JWT -->|split| HB2
+    JWT -->|split| PB2
+    JWT -->|split| Sig2
+    HB2 & PB2 --> Verify[Verify Signature with secret/public key]
+  end
+```
 
 ### Signing Methods
 
   * **HMAC (Symmetric):** Uses **one secret key** to both sign and verify the token. Fast and simple.
-  * **RSA / ECDSA (Asymmetric):** Uses a **private key** to sign and a **public key** to verify. More complex, but allows third-party services to verify a token without having access to the secret key.
+  * **RSA / ECDSA (Asymmetric):** Uses a **private key** to sign and a **public key** to verify. More complex, but allows third-party services to verify a token without having access to the secret key — ideal for distributed verification.
 
 -----
 
-## 3\. 📦 How to Store Tokens on the Client
+## 3. 📦 How to Store Tokens on the Client
 
 Once a user logs in, the server sends them a JWT. The client must store it and send it back with every future request. There are two main ways to do this:
 
 | Method | Description | Pros | Cons |
 | :--- | :--- | :--- | :--- |
-| **JWT in Cookie** | Server sets the token in an `HttpOnly`, `Secure` cookie. The browser auto-sends it with each request. | ✅ **Safer from XSS** (JavaScript can't read it).<br>✅ Easy session handling. | ❌ **Risk of CSRF** (Cross-Site Request Forgery).<br>❌ Less flexible for APIs/mobile. |
-| **JWT in Response (JSON)**| Token is sent in the response body. Client stores it (e.g., `localStorage`) and manually adds it in the `Authorization` header. | ✅ **Works for all clients** (APIs, mobile).<br>✅ Avoids CSRF. | ❌ **Vulnerable to XSS** (if an attacker runs JS, they can steal the token). |
+| **JWT in Cookie** | Server sets the token in an `HttpOnly`, `Secure` cookie. The browser auto-sends it with each request. | ✅ **Safer from XSS** (JavaScript can't read it).<br>✅ Easy session handling for browsers. | ❌ Vulnerable to CSRF if not configured with `SameSite` / CSRF protection. |
+| **JWT in Response (JSON)**| Token is sent in the response body. Client stores it (e.g., `localStorage`) and manually adds it in the `Authorization` header. | ✅ **Works for all clients** (APIs, mobile).<br>✅ Fine-grained control in SPA. | ❌ Vulnerable to XSS if stored in `localStorage` / accessible JS. |
 
 > ### 💡 Rule of Thumb
 >
 >   * **For browser-based web apps:** Use **Cookies** with the `HttpOnly`, `Secure`, and `SameSite=Strict` attributes. This provides the best all-around protection against both XSS and CSRF.
 >   * **For mobile apps or third-party APIs:** Use the **Authorization Header** method.
 
+### Visual: Token Storage Decision Flow
+
+```mermaid
+flowchart TD
+  A[Which client?] --> B{Browser}
+  A --> C{Mobile / Server}
+  B --> D[Use HttpOnly Secure Cookie + SameSite]
+  C --> E[Store in secure storage and send via Authorization header]
+```
+
 -----
 
-## 4\. 🔄 The Access Token + Refresh Token Strategy
+## 4. 🔄 The Access Token + Refresh Token Strategy
 
 A single, long-lived JWT is a huge security risk. If it's stolen, an attacker has access until it expires. The standard solution is to use **two** tokens.
 
@@ -112,6 +140,29 @@ Refresh tokens are highly sensitive and **must be stored statefully on the serve
   * ✅ **Invalidate Sessions:** When a user logs out, you **delete their refresh token** from your database. Their session is now fully dead.
   * ✅ **Detect Threats:** You can block a specific refresh token if you detect suspicious activity (like a sudden IP address change).
   * ✅ **Manage Devices:** You can store one token per device, allowing a user to "log out of all other devices."
+
+### Visual: Access + Refresh Flow (Mermaid)
+
+```mermaid
+sequenceDiagram
+  participant U as User/Client
+  participant AS as Auth Server
+  participant API as Resource Server
+
+  U->>AS: POST /login (credentials)
+  AS-->>U: access_token (short) + refresh_token (long)
+
+  U->>API: GET /resource (Authorization: Bearer access_token)
+  API->>AS: Validate access_token (signature + exp)
+  alt access_token valid
+    API-->>U: 200 OK (resource)
+  else access_token expired
+    U->>AS: POST /refresh (refresh_token)
+    AS-->>U: new access_token
+    U->>API: GET /resource (new access_token)
+    API-->>U: 200 OK
+  end
+```
 
 ### How to Store Refresh Tokens
 
@@ -135,7 +186,7 @@ Store them securely, just like passwords. **Always hash the refresh token** in y
 
 -----
 
-## 5\. 🗑️ How to Invalidate an Access Token
+## 5. 🗑️ How to Invalidate an Access Token
 
 This is the classic "problem" with stateless JWTs. Because the server *doesn't* check a database, **an access token is valid until it expires.** You cannot "unsend" it.
 
@@ -145,7 +196,7 @@ If a user logs out, their 15-minute access token is still technically valid unti
 
 ⏳ **Make access tokens expire very quickly (e.g., 5–15 minutes).**
 
-This is the most common and simplest solution. If an access token is compromised, the window of vulnerability is tiny. As soon as the user logs out, their *refresh token* is revoked, so the attacker can't get a new access token.
+This is the most common and simplest solution. If an access token is compromised, the window of vulnerability is tiny. As soon as the user logs out, their *refresh token* is revoked, so the attacker can't obtain new access tokens.
 
 ### Method 2: Blacklist / Token Revocation List (The Stateful Fix)
 
@@ -159,8 +210,17 @@ This adds state back into your stateless system, but is necessary for high-secur
     2.  Check if the token's `jti` is in the blacklist. ❌
   * **Trade-off:** This adds a database/cache lookup to *every single request*, partially defeating the performance benefit of JWTs.
 
+### Visual: Token Revocation (Simple ASCII / Flow)
+
+```
+[User logs out] -> [Server adds jti to blacklist in Redis]
+[Incoming Request] -> [Verify signature] -> [Check blacklist]
+     if jti in blacklist -> reject
+     else -> accept until expiry
+```
+
 -----
 
-## 6\. 📚 Resources
+## 6. 📚 Resources
 
   * [W3Schools: Node.js API Authentication](https://www.w3schools.com/nodejs/nodejs_api_auth.asp) - A practical code example.
