@@ -4,192 +4,152 @@ Built and maintained a scalable, secure authentication system for 70M+ users usi
 
 ---
 
-## Q: Walk me through the high-level architecture. How do API Gateway, Lambda, and DynamoDB interact during a login request?
+## High-level architecture — Login flow (API Gateway → Lambda → DynamoDB)
 
-Example answer:
-
-Certainly. The entire flow was designed to be secure, scalable, and event-driven.
-
-1. A user's client (web or mobile) sends a POST request with their email and password to our `/login` endpoint on Amazon API Gateway.
-2. API Gateway is configured to proxy this request and triggers our primary `LoginHandler` AWS Lambda function.
-3. The Lambda function sanitizes and validates the input (we used a validation library such as Joi).
-4. It queries a DynamoDB table called `Users`. To find the user by email, the function uses a Global Secondary Index (GSI) where `email` is the partition key.
-5. The GSI query returns the user's `userId` and `hashedPassword`.
-6. The Lambda function uses `bcrypt.compare` to securely check the provided password against the stored hash.
-7. If the credentials are valid, the Lambda generates two tokens:
-   - A short-lived Access Token (a JWT, 15-minute expiry) containing `userId` and scope.
-   - A long-lived Refresh Token (an opaque, random string, 30-day expiry).
-8. The Lambda stores a hashed version of the Refresh Token in a separate `RefreshTokens` DynamoDB table, linked to the `userId`.
-9. The Lambda returns the Access Token in the JSON response body and sends the Refresh Token as a secure, HttpOnly cookie.
-10. The client uses the Access Token for authenticated requests until it expires, then exchanges the Refresh Token for a new Access Token.
+1. Client POSTs email & password to /login on API Gateway.
+2. API Gateway proxies request to LoginHandler (AWS Lambda).
+3. Lambda validates input (Joi) and queries Users table via a GSI on email.
+4. DynamoDB returns userId and hashedPassword.
+5. Lambda verifies password with bcrypt.compare.
+6. On success:
+   - Create Access Token: JWT, 15m expiry (contains sub=userId, scope, jti).
+   - Create Refresh Token: opaque random string, 30d expiry.
+7. Store hashed Refresh Token in RefreshTokens DynamoDB table with TTL and userId.
+8. Return Access Token in JSON and set Refresh Token as secure, HttpOnly cookie.
+9. Client uses Access Token until expiry, then exchanges Refresh Token for new Access Token.
 
 ---
 
-## Q: Why choose a serverless (Lambda/API Gateway) architecture over a traditional, container-based (e.g., ECS/EKS with Express) approach?
+## Why serverless (Lambda + API Gateway) vs container-based (ECS/EKS)
 
-Example answer:
-
-That was a key design decision. We chose serverless for three main reasons:
-
-- Scalability & Concurrency  
-  Authentication traffic is highly spiky — massive peaks during business hours and very low traffic overnight. Serverless scales automatically to meet bursts of concurrent requests without manual provisioning. With containers, we would need to provision capacity or build autoscaling strategies that are more complex to operate and tune.
-
-- Reduced Operational Overhead  
-  With a user base of 70M, my team needed to focus on features and security rather than patching OS images, managing Kubernetes, or configuring load balancers. Serverless removes much of that operational burden: AWS manages the underlying infrastructure, runtime updates, and scaling.
-
-- Cost Efficiency  
-  For an event-driven function like login (which typically executes in <200ms), Lambda's pay-per-invocation model is significantly cheaper than running an always-on Express server in ECS/EKS.
-
-Trade-offs and mitigations:
-
-- Cold starts can be a downside. We mitigated cold starts by enabling Provisioned Concurrency on critical functions (e.g., `LoginHandler`, token authorizers) to keep a warm pool and maintain low latency.
-- Observability and debugging require different tooling (AWS X-Ray, CloudWatch, structured logging) compared to containerized setups; we invested in tracing, structured logs, and metrics to maintain visibility.
-- If long-lived connections or heavy compute are needed, containers or specialized services might be a better fit; for authentication flows, serverless provided the best balance of cost, scalability, and operational simplicity.
+- Scalability: Automatic concurrency scaling for spiky auth traffic.
+- Reduced ops: Less infrastructure maintenance; team focused on features/security.
+- Cost: Pay-per-invocation (Lambda) is cheaper for short-lived auth functions.
+- Trade-offs & mitigations:
+  - Cold starts → Provisioned Concurrency for critical Lambdas (LoginHandler, authorizers).
+  - Observability → CloudWatch + AWS X-Ray + Grafana dashboards for traces/metrics.
+  - Long-running/connection-heavy workloads → offloaded to containers if needed.
 
 ---
 
-## Q: "What was your role in this? Did you design this from scratch... or... scaling/maintaining? What would you do differently?"
-## Q: "How did you handle CI/CD for this serverless application? What did your deployment and rollback strategy look like?"
+## My role
 
-2. Scalability (70M+ Users)
-Q: "70 million users is a significant scale. What was your DynamoDB key schema design... to avoid hot partitions...?"
-Example Answer: "This was the most critical piece of the design. We used two main tables:
+I led design and implementation end-to-end as the primary engineer on the auth service:
+- Designed the serverless architecture (API Gateway → Lambda → DynamoDB).
+- Implemented core Lambdas (login, refresh, revoke, authorizer) in Node.js.
+- Built secure token flows (JWT access tokens, opaque refresh tokens).
+- Implemented DynamoDB schemas (Users table and RefreshTokens table) and GSIs.
+- Added in-memory caching layer for hot lookups and a Redis-like deny-list substitute (in-memory caches for local/short-lived speed; clustered Redis for production).
+- Instrumented observability: CloudWatch metrics and traces, Grafana dashboards, alarms.
+- Owned incident response, capacity planning, and performance tuning.
 
-Users Table: The Partition Key (PK) was the userId, which was a UUID. This gave us perfect, high-cardinality distribution for all 'get profile' or 'update settings' operations, as all requests for a specific user would hit the same partition.
+---
 
-AuthIndex GSI: The login problem is that users log in with email, not userId. A scan is impossible. So, we created a Global Secondary Index (GSI) on the Users table called email-index. The PK of this GSI was the email attribute.
+## CI/CD, deployment and rollback strategy
 
-Since emails are unique and have high cardinality, this distributed our read traffic for logins evenly across the GSI's partitions, completely avoiding hot partitions during peak login times. We used On-Demand capacity for both the table and the GSI, so it scaled automatically with traffic spikes."
+- CI: Jenkins pipelines run unit tests, linting, and integration tests on PRs.
+- Packaging & Deployment: Serverless Framework packages Lambdas and CloudFormation templates; Jenkins deploys to staging then production.
+- Canary & staged rollout: Use Lambda aliases and traffic shifting (CloudFormation/Serverless) to route a small % to new versions, monitor metrics.
+- Automated checks: Post-deploy smoke tests + CloudWatch & Grafana health checks.
+- Rollback: If errors or SLO breaches observed, Jenkins triggers alias rollback to the previous function version (instant) and notifies on-call.
+- Secrets: JWT signing keys and DB credentials in AWS Secrets Manager with rotation.
+- Infrastructure as code: All infra in Serverless/CloudFormation for repeatable rollbacks.
 
-Q: "What were the primary performance bottlenecks you faced? Was it Lambda cold starts, DynamoDB read/write capacity...?"
-Example Answer: "Our biggest bottleneck, by far, was Lambda cold starts. In our v1, a user hitting a cold start could experience a 4-5 second login, which was unacceptable. As mentioned, we solved this with Provisioned Concurrency on our user-facing Lambdas.
+---
 
-Our second biggest bottleneck was downstream service load. Our GetProfile Lambda (which reads from the Users table) was being called by every other microservice to get user details. This was creating read-pressure on our DynamoDB table. We solved this by implementing a caching layer."
+## DynamoDB schema & avoiding hot partitions
 
-Q: "How did you handle caching? Where did you implement it (e.g., DynamoDB DAX, ElastiCache) and what data was cached?"
-Example Answer: "We used ElastiCache for Redis (not DAX, as we needed fine-grained control over what we cached). We implemented it using the cache-aside pattern.
+- Users table: PK = userId (UUID) for even distribution on profile reads/writes.
+- GSI (email-index): PK = email for login lookups; emails have high cardinality to avoid hot partitions.
+- RefreshTokens table: PK = tokenId or userId+tokenId with TTL for automatic expiration.
+- Access patterns considered to keep read/write evenly distributed; use batch and exponential backoff on retries.
 
-We cached two main things:
+---
 
-"Hot" User Data: Data that's read often but changes rarely, like username, profilePictureUrl, and accountTier. When a service requested a user's profile, our Lambda would check Redis first. If it was a 'cache miss,' it would fetch from DynamoDB and then write the result to Redis with a 1-hour TTL.
+## Performance bottlenecks and mitigations
 
-JWT Revocation List: This was a security-driven use. When a user logged out, we'd add the jti (JWT ID) of their access token to a Redis set. Our authorizer checked this set, so it was a critical, high-throughput cache.
+- Cold starts: Provisioned Concurrency; smaller, focused Lambdas to reduce startup time.
+- Cache pressure: Split caching workloads — in-memory caching for very hot, local reads; dedicated Redis cluster for deny-list and high-throughput caches.
+- Downstream load: Add local caches and TTLs; use asynchronous fan-out where possible.
 
-This caching layer dramatically reduced our DynamoDB read costs and took the load off our primary database, allowing it to focus on writes (like new user registrations)."
+---
 
-3. Security (A core part of auth)
-Q: "You mention 'secure'. What were the top 3 security vulnerabilities you designed against?"
-Example Answer: "As an auth system, we were a prime target. We focused heavily on the OWASP Top 10. My top 3 were:
+## Caching strategy
 
-Broken Authentication: We prevented this by:
+- In-memory caching (local/Lambda ephemeral) for micro-latency hot lookups (username, profilePictureUrl) with short TTL.
+- Dedicated Redis cluster (or ElastiCache) for:
+  - JWT deny-list (high-throughput reads on each request) with TTL equal to remaining token life.
+  - Profile cache for frequently-read, rarely-changed fields.
+- Cache-aside pattern: read from cache → if miss, read DynamoDB → populate cache.
 
-Using bcrypt with a strong salt and work factor for all password hashing.
+---
 
-Implementing a Refresh Token flow, so our powerful Access Tokens (JWTs) were extremely short-lived (15 mins), minimizing their attack window.
+## Security: top mitigations
 
-Enforcing multi-factor authentication (MFA) for all admin accounts.
+1. Broken Authentication
+   - bcrypt with strong cost factor for passwords.
+   - Short-lived JWTs (15m) + stateful Refresh Tokens (30d) stored hashed in DynamoDB.
+   - Mandatory MFA for admin/critical accounts.
 
-Injection: We used the principle of 'never trust user input.' Every request payload was passed through a schema validation library (Joi) in the Lambda before any business logic was run. This prevented any malformed data (and potential NoSQL injection vectors) from reaching our DynamoDB queries.
+2. Injection & Input Validation
+   - Joi validation for all inputs before business logic.
+   - Parameterized queries and least privilege IAM roles.
 
-Broken Access Control: We ensured user 'A' could never access user 'B's data. We did this by never trusting a userId passed in the request body or URL. Our JWT Authorizer would validate the token and inject the trusted userId (from the token's sub claim) into the request context. All subsequent database queries used that userId."
+3. Broken Access Control
+   - Never trust user-supplied userId; always validate via JWT subject and authorizer.
+   - Scoped tokens and role-based checks in services.
 
-Q: "Let's talk about JWTs. How did you handle JWT invalidation? For instance, what happens immediately when a user logs out...?"
-Example Answer: "This is a classic 'stateless' challenge. We used a hybrid stateful approach for immediate invalidation.
+Secrets managed in AWS Secrets Manager with rotation; authorizers trust AWSCURRENT and AWSPREVIOUS keys during rotation window.
 
-Refresh Tokens (Easy Part): These were stateful. They were stored in a DynamoDB table. When a user logged out, we simply deleted the Refresh Token row from the database. That user could no longer get new Access Tokens.
+---
 
-Access Tokens (Hard Part): These are stateless and designed to be trusted until they expire. To invalidate them immediately, we used a Redis-based Deny List.
+## JWT invalidation (logout / immediate revoke)
 
-When a user logged out, we'd take the jti (JWT ID) claim from their current 15-minute Access Token.
+- Refresh Tokens: stateful — delete the refresh token row in DynamoDB on logout to prevent new access tokens.
+- Access Tokens: deny-list stored in high-performance cache (Redis). On logout, write the token jti to the deny-list with TTL = remaining token lifetime. Lambda Authorizer checks deny-list on each request.
 
-We'd write that jti into a Redis set. We set the TTL on that Redis key to be the remaining life of the token (e.g., 14 minutes).
+---
 
-Our custom Lambda Authorizer, which ran on every authenticated request, would perform a sub-millisecond check against this Redis set. If the jti was in the deny list, it rejected the token with a 401.
+## Data in JWT vs runtime lookups
 
-This gave us the speed of stateless JWTs for most requests, but the security of immediate revocation when we needed it."
+- JWT contains minimal claims:
+  - sub: userId
+  - scope: permissions
+  - iat, exp, jti, iss
+- Avoid PII in token to reduce risk & token size.
+- Downstream services fetch user attributes (email, displayName, accountTier) from cache/DynamoDB when needed to avoid stale PII.
 
-Q: "What data did you store in the JWT payload versus what did you query from DynamoDB... What were the trade-offs?"
-Example Answer: "We kept our JWT payload as minimal as possible. It contained only:
+---
 
-sub (Subject): The userId (a UUID).
+## Preventing brute-force & credential-stuffing
 
-scope: An array of permissions, like ['read:profile', 'write:posts'].
+- AWS WAF in front of API Gateway for IP-level protections and managed rules.
+- API Gateway throttling per route/IP.
+- Application-level soft-lock after repeated failed attempts; escalate to CAPTCHA or challenge-based flow.
+- Monitoring for anomalous patterns in Grafana/CloudWatch and automated blocking where required.
 
-Standard claims: iat (Issued At), exp (Expiry), iss (Issuer).
+---
 
-We explicitly did not store things like email, username, or accountTier in the token.
+## Observability & SLIs/SLOs
 
-The Trade-off:
+- Metrics in CloudWatch; dashboards in Grafana:
+  - Availability: % non-5xx responses; SLO = 99.9%.
+  - Latency: P99 LoginHandler < 800ms.
+  - Error rate: alarm on spikes of Lambda 5xx or DynamoDB throttles.
+- Distributed tracing with AWS X-Ray for end-to-end traces.
 
-Con: This meant our downstream services had to make an extra API call (to our cache/DB) to get the user's name or email.
+---
 
-Pro (Why we did it):
+## Incident example (summary)
 
-Security: If a token was compromised, it exposed minimal PII.
+- Problem: P99 login latency spiked due to Redis cluster saturation (deny-list and profile cache shared).
+- Short-term: scaled Redis instance; restored latency.
+- Long-term: split caches into dedicated clusters for deny-list vs profile cache, isolating workloads.
 
-Stale Data: If a user changes their username, all their old, valid JWTs would contain stale data. By forcing a lookup, we ensured services always had the freshest user data.
+---
 
-Size: JWTs are sent in HTTP headers, which have size limits. Keeping them small is critical."
+## Technologies used (concise)
 
-Q: "How did you manage and rotate secrets (like your JWT signing key or database credentials) in this serverless environment?"
-Example Answer: "We used AWS Secrets Manager for all secrets. Our JWT signing key was stored there.
+Node.js, Express (local dev), AWS Lambda, API Gateway, DynamoDB (with GSIs), Serverless Framework / CloudFormation, JWT, bcrypt, RefreshTokens table, AWS Secrets Manager, ElastiCache/Redis + in-memory caching, AWS WAF, AWS X-Ray, CloudWatch, Grafana, Jenkins CI/CD.
 
-For rotation, we used Secrets Manager's built-in rotation feature. We had a separate, dedicated Lambda function that Secrets Manager would invoke on a schedule (e.g., every 90 days). This Lambda would:
-
-Generate a new key pair (public/private).
-
-Store the new private key in Secrets Manager with the AWSCURRENT label.
-
-The old private key would automatically be labeled AWSPREVIOUS.
-
-Our AuthHandler Lambda (which signs tokens) was coded to only use the AWSCURRENT key. Our Authorizer Lambda (which verifies tokens) was coded to fetch and trust both AWSCURRENT and AWSPREVIOUS keys.
-
-This allowed a seamless, zero-downtime rotation. Old tokens signed with the previous key were still valid until they expired, while all new tokens were signed with the new key."
-
-Q: "What measures did you put in place to prevent brute-force or credential-stuffing attacks?"
-Example Answer: "We had a multi-layered defense:
-
-AWS WAF: At the edge, in front of API Gateway, we used AWS WAF. We used its managed rulesets to block known malicious IPs and to rate-limit IPs that were making an unusual number of requests to the /login endpoint.
-
-API Gateway Throttling: We also applied fine-grained throttling in API Gateway itself, limiting a single IP to (for example) 10 login attempts per minute.
-
-Application-Level Logic: After 5 failed login attempts for a specific account, our LoginHandler Lambda would 'soft-lock' the account. We wouldn't fully lock it (to prevent a DoS attack), but we would require a CAPTCHA to be solved for that username on all subsequent login attempts. This made automated attacks computationally expensive."
-
-4. Operational & Problem Solving
-Q: "How did you monitor the health of this system? What were your key metrics (SLIs/SLOs) for latency and error rates?"
-Example Answer: "Our monitoring was centered in Amazon CloudWatch and AWS X-Ray. I built a primary CloudWatch Dashboard for our team.
-
-Our key SLIs (Service Level Indicators) were:
-
-Availability: The percentage of non-5xx (server error) responses from our API Gateway. Our SLO (Service Level Objective) was 99.9% (or "three nines").
-
-Latency: The P99 (99th percentile) latency of our LoginHandler Lambda. Our SLO was P99 < 800ms.
-
-Error Rate: We had specific CloudWatch Alarms for any spike in Lambda 5xx Errors or DynamoDB ThrottleEvents.
-
-We also used AWS X-Ray for distributed tracing. This was a lifesaver, as it allowed us to see a full trace of a request as it flowed from API Gateway, to Lambda, to DynamoDB, and to Redis, letting us pinpoint exactly where a bottleneck was."
-
-Q: "Tell me about a time the authentication service failed. What was the root cause, how did you diagnose it, and what was the permanent fix?"
-Example Answer: (Using the STAR method: Situation, Task, Action, Result)
-
-"Situation: We had a partial outage about a month after I rolled out the Redis-based JWT deny-list. At peak traffic (around 9 AM), our P99 login latency shot up from ~200ms to over 5 seconds, and we started seeing a cascade of 504 Gateway Timeouts.
-
-Task: I was the on-call engineer. My job was to diagnose the issue and restore service as quickly as possible.
-
-Action:
-
-Diagnose: I first checked our CloudWatch dashboard. I saw Lambda P99 latency was through the roof, but our DynamoDB metrics (throttling, latency) were perfectly healthy. This told me the database was not the problem.
-
-Trace: I immediately went to AWS X-Ray. The X-Ray trace showed the LoginHandler Lambda was spending 99% of its time (4-5 seconds) on one specific call: a Redis:GET command. The Redis cluster for our deny-list was the bottleneck.
-
-Contain: I checked the ElastiCache metrics and saw its CPU was pegged at 100%. As a short-term fix, I scaled up the Redis instance type (from a t3.small to an r5.large). Within 10 minutes, the cluster was provisioned, CPU dropped, and P99 latency returned to normal. The outage was over.
-
-Result (Permanent Fix): The root cause was a design flaw. We were using a single, small Redis cluster for both the high-throughput JWT deny-list (read on every API call) and our low-throughput user profile cache. We had massively underestimated the read load from the deny-list.
-
-The permanent fix was to re-architect our caching layer. We split it into two:
-
-A new, high-performance Redis cluster for the deny-list.
-
-A separate, smaller cluster for the profile cache.
-
-This isolated the workloads and taught me a valuable lesson: treat your caching layer with the same scaling and performance respect as your primary database."
+---
