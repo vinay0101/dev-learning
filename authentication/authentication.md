@@ -164,3 +164,9 @@ This adds state back into your stateless system, but is necessary for high-secur
 ## 6\. 📚 Resources
 
   * [W3Schools: Node.js API Authentication](https://www.w3schools.com/nodejs/nodejs_api_auth.asp) - A practical code example.
+  * Common Questions:
+  * 1. What is a JWT
+    2. How is a JWT structured?
+    3. How do you securely store JWT at client side?
+    4. What are the common use cases of JWT?
+    5. How can you invalidate a JWT?
