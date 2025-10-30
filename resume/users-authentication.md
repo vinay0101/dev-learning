@@ -47,3 +47,6 @@ Trade-offs and mitigations:
 - If long-lived connections or heavy compute are needed, containers or specialized services might be a better fit; for authentication flows, serverless provided the best balance of cost, scalability, and operational simplicity.
 
 ---
+
+## Q: "What was your role in this? Did you design this from scratch... or... scaling/maintaining? What would you do differently?"
+## Q: "How did you handle CI/CD for this serverless application? What did your deployment and rollback strategy look like?"
