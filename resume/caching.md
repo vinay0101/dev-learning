@@ -1,107 +1,91 @@
-Caching Strategy Migration
-This document outlines the strategic shift from a file-based caching system to an in-memory caching system for the application's data layer.
+# Caching Strategy Migration
 
-1. The Previous Approach: File-Based Caching
+This document outlines the strategic shift from a **file-based caching** system to an **in-memory caching** system for the application's data layer.
+
+---
+
+## 1. The Previous Approach: File-Based Caching
+
 This strategy relied on the server's local file system to persist cached data.
 
-Approach:
+### Approach
 
-Storage: A single JSON file (e.g., global.cache_fileName) was used as the cache store.
+- **Storage**: A single JSON file (for example, `global.cache_fileName`) was used as the cache store.
 
-Cache Set (Write): On a cache miss, the application would:
+- **Cache Set (Write)**: On a cache miss, the application would:
+  1. Fetch data from the database (e.g., **DynamoDB**).
+  2. Read the entire JSON cache file from disk.
+  3. Parse the JSON string into a JavaScript object.
+  4. Add or update the new data along with a **TTL**.
+  5. Re-serialize the entire object back into a JSON string.
+  6. Write the entire string back to the file on disk.
 
-Fetch data from the database (DynamoDB).
+- **Cache Get (Read)**: On a cache hit, the application would:
+  1. Read the entire JSON cache file from disk.
+  2. Parse the JSON string.
+  3. Look up the requested key.
+  4. If the key exists and its **TTL** is valid, return the data.
 
-Read the entire JSON cache file from the disk.
+### Pros
 
-Parse the JSON string into a JavaScript object.
+- **Persistence**: Cache survives application restarts, redeployments, or crashes (because it is stored on disk). This reduces "cold starts".
+- **Simplicity**: Straightforward to implement for a single-server, low-traffic environment; no external dependencies required.
 
-Add or update the new data (with a TTL) in the object.
+### Cons
 
-Re-serialize the entire object back into a JSON string.
+- **Performance Bottleneck**: Extremely I/O-intensive — disk access is orders of magnitude slower than RAM. Every read/write (even for a small item) required full-file operations.
+- **Scalability Issues**: As the JSON file grows, read/parse/stringify/write cycles become progressively slower. This approach does **not** scale well with increased data volume or traffic.
+- **Concurrency & Race Conditions**: Non-atomic operations introduce risk: concurrent cache-miss handlers can read and write simultaneously, leading to data loss or corruption.
+- **No Memory Management**: File size can grow unchecked; there is no built-in eviction policy (e.g., `max items` or `max file size`).
 
-Write the entire string back to the file on disk.
+---
 
-Cache Get (Read): On a cache hit, the application would:
+## 2. The New Approach: In-Memory Caching
 
-Read the entire JSON cache file from disk.
+This strategy stores cached data in the application process memory (RAM).
 
-Parse the JSON string.
+### Approach
 
-Look up the requested key.
+- **Storage**: A global JavaScript object, e.g., `store = {}`, held in the Node.js process memory.
 
-If the key exists and its TTL is valid, return the data.
+- **Cache Set (Write)**: On a cache miss, the application:
+  1. Fetches data from the database.
+  2. Checks if the new item exceeds memory limits (`MAX_CACHE_SIZE`, `MAX_ITEM_SIZE`).
+  3. If limits are reached, runs an eviction policy (e.g., **FIFO** — First-In-First-Out) to remove old items until there is space.
+  4. Adds the new data and a **TTL** directly to the in-memory object (O(1) operation).
+  5. Updates internal memory usage metrics.
 
-Pros:
+- **Cache Get (Read)**: On a cache hit, the application:
+  1. Looks up the key in the in-memory object (O(1)).
+  2. If the key exists, checks the **TTL**.
+  3. If valid, returns the data directly from RAM.
 
-Persistence: The cache survived application restarts, re-deployments, or crashes, as it was saved on disk. This reduced "cold starts."
+### Pros
 
-Simplicity: For a single-server, low-traffic environment, this was a straightforward approach without external dependencies.
+- **Extreme Performance**: RAM access is vastly faster than disk I/O (nanoseconds vs. milliseconds), reducing latency for cached responses.
+- **Low I/O**: Eliminates disk as a caching bottleneck; reduces pressure on the event loop and system resources.
+- **Controlled Memory Usage**: Explicit limits (`MAX_ITEMS`, `MAX_CACHE_SIZE`) prevent out-of-memory crashes.
+- **Efficient Eviction**: A FIFO policy (or other policies) keeps the cache within bounds by evicting older items automatically.
+- **Atomic (in-process)**: In a single-threaded Node.js process, in-memory object operations are effectively atomic, avoiding file-based race conditions.
 
-Cons:
+### Cons
 
-Performance Bottleneck: This approach is extremely I/O-intensive. Disk access is thousands of times slower than RAM access. Every read and write operation (even for a small piece of data) required reading and writing the entire cache file, leading to significant latency.
+- **Volatility**: Cache is not persistent. On process restarts, crashes, or redeploys, the entire cache is lost — causing a "cold start" where data must be re-fetched from the DB.
+- **Limited Vertical Scalability**: Cache size is limited to the available RAM of the single Node.js process.
+- **Horizontal Scalability (Clustering) Issues**:
+  - Each process maintains its own independent cache; caches are not shared across processes or pods.
+  - A write in one process (which updates the DB and its local cache) is **not** reflected in other processes, causing **cache inconsistency** and stale reads.
+  - Redundant memory usage and repeated DB fetches occur as the same data may be cached separately in each process.
 
-Scalability Issues: As the cache grew, the JSON file size would increase, making the read/parse/stringify/write cycle progressively slower. This does not scale with data volume or traffic.
+---
 
-Concurrency & Race Conditions: The implementation was not atomic. If two concurrent requests missed the cache at the same time, they would both try to read and write to the file. This could lead to one request's data overwriting the other's, resulting in data loss or file corruption.
+## 3. Summary of Rationale
 
-No Memory Management: The file could grow indefinitely, limited only by disk space. There was no built-in eviction policy (like "max items" or "max file size") to manage the cache's footprint.
+- The migration from **file-based** to **in-memory** caching was driven by the need for improved performance and reduced I/O overhead.
+- The file-based approach introduced significant **I/O bottlenecks**, **concurrency risks**, and poor scalability.
+- The in-memory approach offers massive performance gains and deterministic memory management within a single process.
 
-2. The New Approach: In-Memory Caching
-This strategy leverages the application's own process memory (RAM) to store cached data.
-
-Approach:
-
-Storage: A global JavaScript object (e.g., store = {}) is held in the Node.js process's memory.
-
-Cache Set (Write): On a cache miss, the application:
-
-Fetches data from the database.
-
-Checks if the new item exceeds memory limits (MAX_CACHE_SIZE, MAX_ITEM_SIZE).
-
-If limits are reached, it runs an eviction policy (FIFO - First-In-First-Out) to remove old items until there is space.
-
-Adds the new data and a TTL directly to the in-memory object. This is an extremely fast O(1) hash map operation.
-
-Updates internal memory usage metrics.
-
-Cache Get (Read): On a cache hit, the application:
-
-Looks up the key in the in-memory object (an O(1) operation).
-
-If the key exists, it checks the TTL.
-
-If valid, the data is returned directly from RAM.
-
-Pros:
-
-Extreme Performance: Accessing data from RAM is exceptionally fast (nanoseconds vs. milliseconds for disk I/O). This drastically reduces latency for cached responses.
-
-Low I/O: The server's disk is no longer a bottleneck for caching. This frees up the event loop and system resources.
-
-Controlled Memory Usage: The cache has explicit limits (MAX_ITEMS, MAX_CACHE_SIZE). This prevents the application from running out of memory and crashing.
-
-Efficient Eviction: The FIFO policy ensures that the cache stays within its defined bounds by automatically removing the oldest (and presumably least-used) data when new data needs to be added.
-
-Atomic (in-process): Within a single-threaded Node.js process, object operations are effectively atomic, which eliminates the file-based race conditions.
-
-Cons:
-
-Volatility: The cache is not persistent. If the application process restarts, crashes, or is redeployed, the entire cache is lost. This will result in a "cold start" where the application must re-fetch all data from the database, potentially causing a temporary spike in database load.
-
-Limited Vertical Scalability: The cache size is limited by the amount of RAM available to a single Node.js process.
-
-Horizontal Scalability (Clustering) Issues: This is the most significant trade-off. If the application is run in a cluster (e.g., multiple pods in Kubernetes, multiple processes via PM2), each process will have its own separate, independent in-memory cache. This leads to:
-
-Cache Inconsistency: A write operation in one process (which updates the DB and its local cache) will not be reflected in the other processes. Other processes will continue to serve stale data from their local caches.
-
-Wasted Resources: The same piece of data may be fetched and stored multiple times, once in each process's memory, leading to redundant database calls and memory usage.
-
-3. Summary of Rationale
-The migration from file-based to in-memory caching was driven primarily by the need for performance and scalability. The I/O bottleneck and concurrency risks of the file-based system were a major liability.
-
-The in-memory approach provides a massive performance gain and safe, controlled memory management within a single process.
-
-Future Consideration: This in-memory solution is ideal for single-process deployments. For a clustered, horizontally-scaled environment, the next logical step would be to implement a distributed cache (like Redis or Memcached). A distributed cache provides a shared, external, and persistent (in the case of Redis) memory store that all application processes can access, solving the problem of cache inconsistency.
+**Future Consideration:** For horizontally scaled (clustered) deployments, consider adopting a **distributed cache** (for example, `Redis` or `Memcached`) to:
+- Provide shared, **persistent** (optional) cache storage across processes and pods.
+- Eliminate cache inconsistency across instances.
+- Support larger cache sizes and advanced eviction policies in a single coherent layer.
