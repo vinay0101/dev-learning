@@ -54,6 +54,10 @@ Kafka's architecture is composed of a few key components:
 
 ---
 
+![alt text](https://miro.medium.com/v2/resize:fit:1400/format:webp/1*aAx3tSx_LhJt_Q0EAZaKwg.png)
+
+---
+
 ## 🛡️ 4. How it Works: Replication & Fault Tolerance
 
 What happens if a broker crashes? Do you lose data? No, because of replication.
@@ -165,4 +169,4 @@ This is a common comparison, but they are built for different things.
 * **Real-time Analytics:** Processing user activity, stock prices, or IoT sensor data as it happens.
 * **Log Aggregation:** Collecting logs from all your servers and putting them in one central place for analysis (like an ELK stack).
 * **Event-Driven Architecture:** Powering microservices that react to "events" (e.g., `UserSignedUp`, `OrderPlaced`) instead of directly calling each other.
-* **Data Integration:** Moving data between different systems (e.g., syncing data from your main database to a
+* **Data Integration:** Moving data between different systems (e.g., syncing data from your main database to a search index like Elasticsearch).
