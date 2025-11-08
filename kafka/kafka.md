@@ -54,7 +54,7 @@ Kafka's architecture is composed of a few key components:
 
 ---
 
-![alt text](https://miro.medium.com/v2/resize:fit:1400/format:webp/1*aAx3tSx_LhJt_Q0EAZaKwg.png)
+![alt text](https://github.com/vinay0101/dev-learning/blob/main/kafka/kafka.png)
 
 ---
 
