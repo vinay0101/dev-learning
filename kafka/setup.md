@@ -1,8 +1,4 @@
-Here is the full content for your `README.md` file, including all code and explanations.
 
-You can copy everything inside the code block below and paste it directly into a new file named `README.md`.
-
-```markdown
 # KafkaJS Producer-Consumer Example
 
 This project demonstrates a basic Kafka setup using Docker for Zookeeper and Kafka. It includes Node.js scripts using `kafkajs` for:
@@ -328,6 +324,3 @@ Let's explore the scenarios based on your code.
       * This is the **publish/subscribe (pub/sub)** or "broadcast" model. You can have one service (e.g., `group-A`) processing locations for analytics, and a completely separate service (e.g., `group-B`) processing them for notifications, both reading from the same topic independently.
 
 <!-- end list -->
-
-```
-```
