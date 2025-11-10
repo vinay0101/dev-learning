@@ -80,7 +80,111 @@ const startProducer = async () => {
 };
 
 startProducer().catch(console.error);
+````
+
+### 2\. The First Consumer (`consumer1.js`)
+
+This consumer creates a **temporary, exclusive queue** (by passing `''` as the queue name) and **binds** it to the `pubsub` exchange.
+
+```javascript
+const amqp = require("amqplib");
+
+const startConsumer = async () => {
+    const exchangeName = "pubsub";
+    const exchangeType = "fanout";
+
+    try {
+        const connection = await amqp.connect("amqp://localhost");
+        const channel = await connection.createChannel();
+
+        // Make sure the exchange exists
+        await channel.assertExchange(exchangeName, exchangeType, { durable: false });
+
+        // Create a temporary, exclusive queue. 
+        // The '' means amqplib will create a random queue name for us.
+        // { exclusive: true } means it will be deleted when the connection closes.
+        const q = await channel.assertQueue('', { exclusive: true });
+        
+        console.log("My temporary queue name is:", q.queue);
+
+        // Bind the temporary queue to the fanout exchange
+        await channel.bindQueue(q.queue, exchangeName, '');
+
+        console.log("Starting Consuming on consumer 1");
+
+        // Consume messages
+        channel.consume(q.queue, (msg) => {
+            if (msg.content) {
+                console.log(`firstconsumer - received new message: ${msg.content.toString()}`);
+            }
+        }, {
+            noAck: true // Equivalent to auto_ack=True
+        });
+
+    } catch (error) {
+        console.error("Error in consumer:", error);
+    }
+};
+
+startConsumer().catch(console.error);
 ```
+
+### 3\. The Second Consumer (`consumer2.js`)
+
+This consumer does the *exact same thing* as the first, but independently. It also creates its *own* temporary queue and binds it to the same `pubsub` exchange.
+
+```javascript
+const amqp = require("amqplib");
+
+const startConsumer = async () => {
+    const exchangeName = "pubsub";
+    const exchangeType = "fanout";
+
+    try {
+        const connection = await amqp.connect("amqp://localhost");
+        const channel = await connection.createChannel();
+
+        // Make sure the exchange exists
+        await channel.assertExchange(exchangeName, exchangeType, { durable: false });
+
+        // Create *another* temporary, exclusive queue
+        const q = await channel.assertQueue('', { exclusive: true });
+
+        console.log("My temporary queue name is:", q.queue);
+        
+        // Bind this *second* queue to the same exchange
+        await channel.bindQueue(q.queue, exchangeName, '');
+
+        console.log("Starting Consuming on consumer 2");
+
+        // Consume messages
+        channel.consume(q.queue, (msg) => {
+            if (msg.content) {
+                console.log(`secondconsumer - received new message: ${msg.content.toString()}`);
+            }
+        }, {
+            noAck: true // Equivalent to auto_ack=True
+        });
+
+    } catch (error) {
+        console.error("Error in consumer:", error);
+    }
+};
+
+startConsumer().catch(console.error);
+```
+
+-----
+
+## 🚀 How It Works
+
+To see this in action:
+
+1.  Run `consumer1.js` in a terminal.
+2.  Run `consumer2.js` in a second terminal.
+3.  Run `producer.js` in a third terminal.
+
+When the producer runs, you will see that **both** `consumer1` and `consumer2` log the "Hello I want to broadcast this message" string, proving the fanout exchange successfully broadcast the single message to both consumer queues.
 
 ---
 
