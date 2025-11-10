@@ -145,6 +145,7 @@ This is a common comparison, but they are built for different things.
 
 ---
 
+
 ## 👍👎 8. Key Benefits & Limitations
 
 ### Benefits
@@ -173,141 +174,74 @@ This is a common comparison, but they are built for different things.
 
 ---
 
-# Kafka
-Video Link: [Apache Kafka Crash Course | What is Kafka?](https://youtu.be/ZJJHm_bd9Zo)
-## Prerequisite
-- Knowledge
-  - Node.JS Intermediate level
-  - Experience with designing distributed systems
-- Tools
-  - Node.js: [Download Node.JS](https://nodejs.org/en)
-  - Docker: [Download Docker](https://www.docker.com)
-  - VsCode: [Download VSCode](https://code.visualstudio.com)
+### Video Link: [Apache Kafka Crash Course | What is Kafka?](https://youtu.be/ZJJHm_bd9Zo)
 
-## Commands
-- Start Zookeper Container and expose PORT `2181`.
-```bash
-docker run -p 2181:2181 zookeeper
-```
-- Start Kafka Container, expose PORT `9092` and setup ENV variables.
-```bash
-docker run -p 9092:9092 \
--e KAFKA_ZOOKEEPER_CONNECT=<PRIVATE_IP>:2181 \
--e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://<PRIVATE_IP>:9092 \
--e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 \
-confluentinc/cp-kafka
-```
+---
 
-## Code
-`client.js`
-```js
-const { Kafka } = require("kafkajs");
+# 📨 Topics vs Queues — How to Choose the Right One
 
-exports.kafka = new Kafka({
-  clientId: "my-app",
-  brokers: ["<PRIVATE_IP>:9092"],
-});
+Choosing between **topics** and **queues** is one of the most common architectural decisions in event-driven systems.  
+There’s no absolute winner — the right choice depends on **your system’s constraints**.
 
-```
-`admin.js`
-```js
-const { kafka } = require("./client");
+Below are **5 key questions** that help you decide.
 
-async function init() {
-  const admin = kafka.admin();
-  console.log("Admin connecting...");
-  admin.connect();
-  console.log("Adming Connection Success...");
+## 1️⃣ One Worker or Many?
 
-  console.log("Creating Topic [rider-updates]");
-  await admin.createTopics({
-    topics: [
-      {
-        topic: "rider-updates",
-        numPartitions: 2,
-      },
-    ],
-  });
-  console.log("Topic Created Success [rider-updates]");
+- **If one consumer should process a message → use a Queue.**  
+- **If many consumers need the same message → use a Topic.**
 
-  console.log("Disconnecting Admin..");
-  await admin.disconnect();
-}
+> 🧩 **Rule of thumb:**  
+> **Queue = throughput**  
+> **Topic = fan-out (broadcast)**
 
-init();
-```
-`producer.js`
-```js
-const { kafka } = require("./client");
-const readline = require("readline");
+## 2️⃣ Can You Lose Messages?
 
-const rl = readline.createInterface({
-  input: process.stdin,
-  output: process.stdout,
-});
+- **If losing a message is unacceptable → Queue wins.**  
+- **Topics** can achieve reliability but need more configuration (offset tracking, retries, replay).
 
-async function init() {
-  const producer = kafka.producer();
+> Queues often come with stronger delivery guarantees out of the box.
 
-  console.log("Connecting Producer");
-  await producer.connect();
-  console.log("Producer Connected Successfully");
+## 3️⃣ Are You Scaling Workload or Audience?
 
-  rl.setPrompt("> ");
-  rl.prompt();
+- **Queues** scale *workload* — multiple workers share the same queue to process messages in parallel.  
+- **Topics** scale *audience* — each subscriber gets its own copy of the message.
 
-  rl.on("line", async function (line) {
-    const [riderName, location] = line.split(" ");
-    await producer.send({
-      topic: "rider-updates",
-      messages: [
-        {
-          partition: location.toLowerCase() === "north" ? 0 : 1,
-          key: "location-update",
-          value: JSON.stringify({ name: riderName, location }),
-        },
-      ],
-    });
-  }).on("close", async () => {
-    await producer.disconnect();
-  });
-}
+> ⚠️ Many engineers confuse these two, but they serve different scaling goals.
 
-init();
-```
-`consumer.js`
-```js
-const { kafka } = require("./client");
-const group = process.argv[2];
+## 4️⃣ What If a Consumer Dies?
 
-async function init() {
-  const consumer = kafka.consumer({ groupId: group });
-  await consumer.connect();
+- **Queues** handle message tracking automatically (acknowledgments, re-delivery).  
+- **Topics** require manual offset and state management — especially tricky at large scale.
 
-  await consumer.subscribe({ topics: ["rider-updates"], fromBeginning: true });
+> The complexity of managing offsets can become a bottleneck in high-volume systems.
 
-  await consumer.run({
-    eachMessage: async ({ topic, partition, message, heartbeat, pause }) => {
-      console.log(
-        `${group}: [${topic}]: PART:${partition}:`,
-        message.value.toString()
-      );
-    },
-  });
-}
+## 5️⃣ How Fast Is the System Evolving?
 
-init();
-```
-## Running Locally
-- Run Multiple Consumers
-```bash
-node consumer.js <GROUP_NAME>
-```
-- Create Producer
-```bash
-node producer.js
-```
-```bash
-> tony south
-> tony north
-```
+- **If your system is evolving or new consumers will join → choose a Topic.**  
+- **If your workflow is stable and predictable → choose a Queue.**
+
+> Topics provide flexibility; queues provide simplicity.
+
+## 🧠 Recommendation
+
+Start simple — **use a Queue**.  
+When you truly need **fan-out** or **event-driven flexibility**, evolve to a **Topic**.
+
+> Picking based on *preference* is amateur.  
+> Picking based on *constraints* is senior. ✅
+
+### 🔍 TL;DR
+
+| Decision Factor | Queue | Topic |
+|------------------|--------|--------|
+| Consumers | Single (shared) | Multiple (independent) |
+| Goal | Throughput | Broadcast |
+| Message Loss | Rare | Needs config |
+| Scaling | Parallel workers | Fan-out subscribers |
+| Use Case | Task distribution | Event notification |
+
+📘 **Pro tip:**  
+If you’re starting with microservices and unsure where to begin, go with **queues** first — they’re easier to reason about.  
+Later, when your architecture matures, **introduce topics** for scalability and flexibility.
+
+---
