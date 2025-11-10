@@ -31,4 +31,4 @@
 
 ---
 
-![alt text](https://github.com/vinay0101/dev-learning/blob/main/rabbitmq/rabbitmq.png)
+![alt text](https://github.com/vinay0101/dev-learning/blob/main/rabbitmq/assets/rabbitmq.png)
