@@ -152,3 +152,7 @@ You'll need two separate terminal windows.
     ```
 
 <!-- end list -->
+
+---
+
+![alt text](https://github.com/vinay0101/dev-learning/blob/main/rabbitmq/assets/default-exchange.png)
