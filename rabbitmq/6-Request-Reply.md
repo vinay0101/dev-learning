@@ -1,10 +1,10 @@
-# 🔄 The Request-Reply Pattern in RabbitMQ
+# The Request-Reply Pattern in RabbitMQ
 
 This guide provides an overview of the **Request-Reply** pattern in RabbitMQ. This pattern allows a client application to send a request and wait for a specific response from a server, much like a traditional function call or API request.
 
 ---
 
-## 👫 Client and Server Roles
+## Client and Server Roles
 
 In this pattern, the familiar terms "producer" and "consumer" are often replaced to better describe their roles:
 
@@ -13,7 +13,7 @@ In this pattern, the familiar terms "producer" and "consumer" are often replaced
 
 ---
 
-## ⚙️ How It Works: Step-by-Step
+## How It Works: Step-by-Step
 
 The process involves a clever use of message properties to direct traffic between the client and server.
 
