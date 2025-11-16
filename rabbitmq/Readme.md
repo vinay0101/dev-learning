@@ -31,4 +31,9 @@
 
 ---
 
+## Youtube Link
+https://www.youtube.com/playlist?list=PLalrWAGybpB-UHbRDhFsBgXJM1g6T4IvO
+
+---
+
 ![alt text](https://github.com/vinay0101/dev-learning/blob/main/rabbitmq/assets/rabbitmq.png)
